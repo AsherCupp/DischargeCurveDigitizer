@@ -104,13 +104,22 @@
   <div id="outMsg" class="help"></div>
   <div id="tablewrap"><table id="tbl"></table></div>
 
-  <h2>5. Continuous lookup in Excel</h2>
-  <div class="help">This builds a formula that looks up the voltage for any SoC you type into a cell. It blends between the two nearest table rows, so 37.4% works even if the table only has 37 and 38. SoC values past the ends of the table return the end voltage instead of an error. It works in any version of Excel and in Google Sheets.</div>
+  <h2>5. Lookup formula for Excel</h2>
+  <div class="row"><b>Look up</b> <select id="fDir"><option value="s2v">voltage from SoC</option><option value="v2s">SoC from voltage</option></select></div>
+  <div class="help" id="fHelp"></div>
   <div class="row"><b>Table starts at</b> <input type="text" id="anchor" value="A1" style="width:50px"></div>
   <div class="help" style="margin-top:0">The cell where you pasted the table, meaning its top-left corner (the "SoC" header). If you pasted at C5, type C5.</div>
-  <div class="row"><b>SoC input cell</b> <input type="text" id="lookup" value="H2" style="width:50px"></div>
-  <div class="help" style="margin-top:0">The cell where you will type the SoC you want to look up. It can be any empty cell, or a cell that already holds an SoC value from your calculations. Put the formula in a different cell and it will show the voltage.</div>
+  <div class="row"><b id="lookupLbl">SoC input cell</b> <input type="text" id="lookup" value="H2" style="width:50px"></div>
+  <div class="help" style="margin-top:0" id="lookupHelp"></div>
   <div class="row">Curve <select id="fCurve"></select></div>
+  <div id="preferBox" class="hidden">
+    <div class="row">If the voltage matches more than one SoC, use
+      <select id="prefer"><option value="low">the lowest SoC (safer)</option><option value="high">the highest SoC</option></select></div>
+    <div class="help" style="margin-top:0">Flat curves, like LFP cells, can reach the same voltage at more than one SoC. The lowest SoC is the cautious choice when checking how much charge is left.</div>
+  </div>
+  <textarea id="formula" readonly></textarea>
+  <div class="row"><button id="copyF">Copy formula</button></div>
+  <div class="row">Try it <input type="number" id="tryIn" step="any" style="width:80px"> <span id="tryOut" class="px"></span></div>
   <textarea id="formula" readonly></textarea>
   <div class="row"><button id="copyF">Copy formula</button></div>
 </aside>
@@ -320,8 +329,43 @@
     return `=FORECAST(${xcl},OFFSET($${yc}$${r0},${i}-1,0,2),OFFSET($${xc}$${r0},${i}-1,0,2))`;
   }
 
+  // Reverse lookup: voltage in, SoC out. Finds a table segment whose voltages bracket the target.
+  // prefer 'low'/'high' picks the lowest/highest SoC when a flat or noisy curve crosses the voltage more than once.
+  function useFirstMatch(prefer, desc) { return (prefer !== 'high') !== !!desc; }
+  function excelReverseFormula(o) {
+    const m = /^\s*\$?([A-Za-z]{1,3})\$?(\d+)\s*$/.exec(o.anchor || '');
+    if (!m || !o.lookup || !o.lookup.trim() || o.nRows < 2) return null;
+    const c0 = colToNum(m[1]), r0 = +m[2] + (o.header ? 1 : 0), r1 = r0 + o.nRows - 1;
+    const xc = numToCol(c0), yc = numToCol(c0 + 1 + o.curveIdx), L = o.lookup.trim();
+    const xs = `$${xc}$${r0}:$${xc}$${r1}`, ys = `$${yc}$${r0}:$${yc}$${r1}`;
+    const ya = `$${yc}$${r0}:$${yc}$${r1 - 1}`, yb = `$${yc}$${r0 + 1}:$${yc}$${r1}`;
+    const cond = `((${ya}-${L})*(${yb}-${L})<=0)`;
+    const k = useFirstMatch(o.prefer, o.desc) ? `MATCH(TRUE,INDEX(${cond},0),0)` : `LOOKUP(2,1/${cond},ROW(${ya})-${r0 - 1})`;
+    return `=IF(${L}>MAX(${ys}),"Above range",IF(${L}<MIN(${ys}),"Below range",` +
+      `IFERROR(FORECAST(${L},OFFSET($${xc}$${r0},${k}-1,0,2),OFFSET($${yc}$${r0},${k}-1,0,2)),INDEX(${xs},${k}))))`;
+  }
+
+  // Same math as the Excel formulas, run on the table as pasted (xs = SoC column, ys = one curve column).
+  function tableLookup(xs, ys, t, dir, prefer, desc) {
+    if (dir === 'v2s') {
+      const y = ys.map(v => v == null ? 0 : v), vals = ys.filter(v => v != null);
+      if (t > Math.max(...vals)) return 'Above range';
+      if (t < Math.min(...vals)) return 'Below range';
+      const ks = [];
+      for (let k = 0; k < y.length - 1; k++) if ((y[k] - t) * (y[k + 1] - t) <= 0) ks.push(k);
+      const k = useFirstMatch(prefer, desc) ? ks[0] : ks[ks.length - 1];
+      return y[k + 1] === y[k] ? xs[k] : xs[k] + (t - y[k]) * (xs[k + 1] - xs[k]) / (y[k + 1] - y[k]);
+    }
+    const tc = Math.min(Math.max(t, Math.min(...xs)), Math.max(...xs));
+    for (let k = 0; k < xs.length - 1; k++) {
+      const lo = Math.min(xs[k], xs[k + 1]), hi = Math.max(xs[k], xs[k + 1]);
+      if (tc >= lo && tc <= hi) return ys[k] + (tc - xs[k]) * (ys[k + 1] - ys[k]) / (xs[k + 1] - xs[k]);
+    }
+    return null;
+  }
+
   g.Core = { findClusters, traceCurve, columnsToPath, pickColor, makeTransform, toSoc, fromSoc,
-    curveToSoc, buildGrid, resample, excelFormula, colToNum, numToCol };
+    curveToSoc, buildGrid, resample, excelFormula, excelReverseFormula, tableLookup, colToNum, numToCol };
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
 
@@ -618,7 +662,7 @@ $('xMode').onchange = () => {
   updateAll();
 };
 ['qref', 'autoQ', 'step', 'order', 'socUnit', 'dec', 'oor', 'hdr'].forEach(id => $(id).addEventListener('input', updateAll));
-['anchor', 'lookup', 'fCurve'].forEach(id => $(id).addEventListener('input', updateFormula));
+['anchor', 'lookup', 'fCurve', 'fDir', 'prefer', 'tryIn'].forEach(id => $(id).addEventListener('input', updateFormula));
 
 // ---------- output ----------
 function updateOutput() {
@@ -651,11 +695,29 @@ function updateOutput() {
     S.out.rows.map((r, i) => '<tr>' + r.map((v, j) => `<td${j && cols[j - 1].vals[i].clamped ? ' class="clamp" title="Outside traced range"' : ''}>${v}</td>`).join('') + '</tr>').join('');
 }
 function updateFormula() {
-  const ta = $('formula');
+  const ta = $('formula'), v2s = $('fDir').value === 'v2s', frac = $('socUnit').value === 'frac';
+  const what = v2s ? 'voltage' : 'SoC';
+  $('lookupLbl').textContent = v2s ? 'Voltage input cell' : 'SoC input cell';
+  $('lookupHelp').textContent = `The cell where you will type the ${what} you want to look up. It can be an empty cell or one that already holds a ${what} from your calculations. Put the formula in a different cell and it will show the ${v2s ? 'SoC' : 'voltage'}.`;
+  $('preferBox').classList.toggle('hidden', !v2s);
+  $('fHelp').innerHTML = v2s
+    ? `Type a voltage into a cell and the formula returns the matching SoC${frac ? ' (as a fraction)' : ''}, blended between the two nearest table rows. A voltage higher than anywhere on the curve returns "Above range". A voltage lower than anywhere on it returns "Below range". Works in any version of Excel.` +
+      ($('oor').value === 'blank' ? ' <span class="warn">Set "Outside traced range" to "hold end voltage" first, because blank cells confuse this formula.</span>' : '')
+    : 'Type an SoC into a cell and the formula returns the voltage. It blends between the two nearest table rows, so 37.4% works even if the table only has 37 and 38. SoC values past the ends of the table return the end voltage instead of an error. Works in any version of Excel and in Google Sheets.';
+  $('tryIn').placeholder = v2s ? 'volts' : (frac ? 'SoC 0-1' : 'SoC %');
+  $('tryOut').textContent = '';
   if (!S.out || !S.out.rows) { ta.value = ''; return; }
-  const f = Core.excelFormula({ anchor: $('anchor').value, lookup: $('lookup').value, header: $('hdr').checked,
-    nRows: S.out.rows.length, curveIdx: +$('fCurve').value || 0, desc: $('order').value === 'desc' });
+  const idx = +$('fCurve').value || 0, desc = $('order').value === 'desc';
+  const o = { anchor: $('anchor').value, lookup: $('lookup').value, header: $('hdr').checked,
+    nRows: S.out.rows.length, curveIdx: idx, desc, prefer: $('prefer').value };
+  const f = v2s ? Core.excelReverseFormula(o) : Core.excelFormula(o);
   ta.value = f || 'Enter valid cell references (e.g. A1 and H2).';
+  const t = parseFloat($('tryIn').value);
+  if (isFinite(t) && idx < S.out.cols.length) {
+    const xs = S.out.rows.map(r => +r[0]), ys = S.out.rows.map(r => r[idx + 1] === '' ? null : +r[idx + 1]);
+    const r = Core.tableLookup(xs, ys, t, v2s ? 'v2s' : 's2v', $('prefer').value, desc);
+    $('tryOut').textContent = '→ ' + (typeof r === 'number' ? (v2s ? r.toFixed(frac ? 4 : 2) + (frac ? '' : ' %') : r.toFixed(3) + ' V') : r);
+  }
 }
 function tableText(sep) {
   const q = v => sep === ',' && /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
@@ -678,7 +740,7 @@ $('copyF').onclick = () => $('formula').value.startsWith('=') && copyText($('for
 function updateAll() { updateCalUI(); updateOutput(); updateFormula(); render(); }
 
 // ---------- project save/load ----------
-const SETTINGS = ['xMode', 'qref', 'autoQ', 'step', 'order', 'socUnit', 'dec', 'oor', 'hdr', 'maxGap', 'anchor', 'lookup', 'v_x1', 'v_x2', 'v_y1', 'v_y2'];
+const SETTINGS = ['xMode', 'qref', 'autoQ', 'step', 'order', 'socUnit', 'dec', 'oor', 'hdr', 'maxGap', 'anchor', 'lookup', 'fDir', 'prefer', 'v_x1', 'v_x2', 'v_y1', 'v_y2'];
 $('saveProj').onclick = () => {
   if (!S.img) return;
   const settings = {};
