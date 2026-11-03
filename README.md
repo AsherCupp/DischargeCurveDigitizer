@@ -10,7 +10,7 @@ You give it a picture of a discharge chart, like the ones in cell datasheets. Yo
 
 It works with charts that plot voltage against SoC, depth of discharge, or capacity discharged in Ah or mAh. For Ah charts it converts to SoC using the cell's rated capacity, or using the point where each curve ends.
 
-It also writes an Excel formula that blends between table rows. That way any SoC you type gives a voltage, even values that fall between rows.
+It also writes Excel formulas that blend between table rows. One gives the voltage for any SoC you type, even values that fall between rows. The other works the other way, giving the SoC for a voltage, or telling you the voltage is above or below the curve.
 
 ## How to use it
 
@@ -34,6 +34,16 @@ The table only has rows at each step, such as 37% and 38%. The formula in step 5
 Copy the formula and paste it into any other cell. Now when you type 37.4 into H2, that cell shows the voltage at 37.4% SoC. It works the same if H2 holds a value calculated elsewhere in your sheet, so you can point it at your pack's minimum SoC and the voltage updates on its own.
 
 SoC values beyond the ends of the table return the voltage at the nearest end rather than an error. The formula uses only FORECAST, OFFSET and MATCH, so it works in any version of Excel and in Google Sheets.
+
+## Looking up SoC from a voltage
+
+The lookup can also run the other way. Set "Look up" to "SoC from voltage" and the input cell becomes a voltage cell. Typing 3.3 into it gives the SoC where the curve reaches 3.3 V, blended between table rows the same way.
+
+If the voltage is higher than anywhere on the curve, the formula returns the text "Above range". If it is lower than anywhere on the curve, it returns "Below range". You can check for these in other formulas with ISTEXT.
+
+Some curves reach the same voltage at more than one SoC. LFP cells are the usual case, since their voltage stays almost flat across most of the charge. The tool lets you pick whether the formula returns the lowest or highest matching SoC. Lowest is the default because it is the cautious answer when checking how much charge is left.
+
+This formula needs the table's "Outside traced range" setting left on "hold end voltage", since blank cells throw off the search. The "Try it" box under the formula shows the result the formula will give, so you can check a few values before pasting it into your sheet.
 
 ## Accuracy
 
