@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Discharge Curve Digitizer</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.4 "Segoe UI", system-ui, sans-serif; color: #222; background: #eef0f3; }
+  #app { display: flex; height: 100vh; }
+  #side { width: 420px; min-width: 420px; overflow-y: auto; background: #fff; border-right: 1px solid #ccd; padding: 10px 14px 40px; }
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  h1 { font-size: 17px; margin: 4px 0 8px; }
+  h2 { font-size: 14px; margin: 16px 0 6px; padding-top: 10px; border-top: 1px solid #e3e5ea; }
+  .help { color: #667; font-size: 12px; margin: 2px 0 6px; }
+  button { font: inherit; padding: 3px 9px; border: 1px solid #aab; border-radius: 4px; background: #f6f7f9; cursor: pointer; }
+  button:hover { background: #e8ebf0; }
+  button.on { background: #2b6cd4; color: #fff; border-color: #2b6cd4; }
+  button.sm { padding: 1px 6px; }
+  input[type=number], input[type=text], select { font: inherit; padding: 2px 4px; border: 1px solid #bbc; border-radius: 3px; }
+  input[type=number] { width: 80px; }
+  .row { display: flex; align-items: center; gap: 6px; margin: 4px 0; flex-wrap: wrap; }
+  .cal-grid { display: grid; grid-template-columns: 70px 1fr 90px; gap: 4px 6px; align-items: center; }
+  .px { color: #778; font-family: Consolas, monospace; font-size: 11px; }
+  .ok { color: #1a7f37; } .warn { color: #b35900; }
+  #curves .crow { display: flex; align-items: center; gap: 4px; padding: 3px; border-radius: 4px; }
+  #curves .crow.sel { background: #e4edfb; }
+  #curves .crow input.name { width: 120px; }
+  #curves .crow input[type=color] { width: 28px; height: 22px; padding: 0; border: 1px solid #aab; }
+  #curves .cnt { color: #778; font-size: 11px; width: 52px; }
+  #tablewrap { max-height: 300px; overflow: auto; border: 1px solid #ccd; margin-top: 6px; }
+  table { border-collapse: collapse; font-family: Consolas, monospace; font-size: 12px; width: 100%; }
+  th, td { border: 1px solid #e0e2e8; padding: 1px 6px; text-align: right; }
+  th { background: #f2f4f7; position: sticky; top: 0; }
+  td.clamp { color: #a0a0a8; font-style: italic; }
+  textarea { width: 100%; font: 11px Consolas, monospace; height: 64px; }
+  #toolbar { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: #fff; border-bottom: 1px solid #ccd; flex-wrap: wrap; }
+  #hint { padding: 5px 10px; background: #fff8d6; border-bottom: 1px solid #e8dca0; min-height: 28px; }
+  #readout { font-family: Consolas, monospace; font-size: 12px; color: #334; }
+  #wrap { flex: 1; overflow: auto; position: relative; padding: 10px; }
+  #cv { display: block; background: #fff; box-shadow: 0 0 0 1px #ccd; }
+  #cv.cross { cursor: crosshair; }
+  #empty { position: absolute; inset: 40px; border: 3px dashed #aab; border-radius: 12px; display: flex; align-items: center; justify-content: center; text-align: center; color: #667; font-size: 16px; background: #fafbfc; }
+  #loupe { position: fixed; right: 16px; bottom: 16px; width: 176px; height: 176px; border: 2px solid #334; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3); image-rendering: pixelated; pointer-events: none; }
+  #loupe.top { bottom: auto; top: 80px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="app">
+<aside id="side">
+  <h1>Discharge Curve Digitizer</h1>
+  <div class="help">Turns a voltage discharge chart image into a Voltage vs. SoC table you can paste into Excel. Everything runs in this page and nothing is uploaded.</div>
+
+  <h2>1. Load chart image</h2>
+  <div class="row"><input type="file" id="file" accept="image/*,.json"></div>
+  <div class="help">Or paste a screenshot (<b>Win+Shift+S</b>, then <b>Ctrl+V</b> here), or drag an image onto the page. For PDFs, zoom the PDF in before you take the screenshot. Higher resolution gives better accuracy.</div>
+  <div class="row"><button id="saveProj">Save project</button><button id="loadProj">Load project</button><input type="file" id="projFile" accept=".json" class="hidden"></div>
+
+  <h2>2. Calibrate axes</h2>
+  <div class="row">X-axis is:
+    <select id="xMode">
+      <option value="soc">State of charge (%)</option>
+      <option value="dod">Depth of discharge (%)</option>
+      <option value="ah">Capacity discharged (Ah / mAh)</option>
+    </select>
+  </div>
+  <div id="ahOpts" class="hidden">
+    <div class="row">Rated capacity (same unit as axis): <input type="number" id="qref" step="any" placeholder="e.g. 2.5"></div>
+    <div class="row"><label><input type="checkbox" id="autoQ"> Use each curve's own end point as 0% SoC instead</label></div>
+  </div>
+  <div class="help">Click <b>Set</b>, then click a known tick or gridline on the image. Pick two X points and two Y points that are far apart. The magnifier (bottom right) helps you hit the exact pixel. Type each point's axis value in the box.</div>
+  <div class="cal-grid">
+    <button data-cal="x1">Set X1</button><span class="px" id="px_x1">not set</span><input type="number" step="any" id="v_x1" value="0">
+    <button data-cal="x2">Set X2</button><span class="px" id="px_x2">not set</span><input type="number" step="any" id="v_x2" value="100">
+    <button data-cal="y1">Set Y1</button><span class="px" id="px_y1">not set</span><input type="number" step="any" id="v_y1" placeholder="volts">
+    <button data-cal="y2">Set Y2</button><span class="px" id="px_y2">not set</span><input type="number" step="any" id="v_y2" placeholder="volts">
+  </div>
+  <div class="row" id="calStatus"></div>
+
+  <h2>3. Trace curves</h2>
+  <div class="row">
+    <button id="mTrace" data-mode="trace">Auto-trace (click a curve)</button>
+    <button id="mAdd" data-mode="add">Add/remove points</button>
+  </div>
+  <div class="row">
+    <button id="mErase" data-mode="erase">Erase box</button>
+    <button id="mArea" data-mode="area">Limit trace area</button>
+    <button id="clearArea">Clear area</button>
+  </div>
+  <div class="row">Color tolerance <input type="range" id="tol" min="5" max="200" value="60" style="width:130px"> <span id="tolv">60</span></div>
+  <div class="row">Max gap to bridge (px) <input type="number" id="maxGap" value="25" min="0" style="width:60px">
+    <label><input type="checkbox" id="showMask"> Show matching pixels</label></div>
+  <div class="help">Auto-trace follows the clicked color left and right. It bridges dashes and places where other curves cross over. If it jumps onto the wrong curve or the legend, lower the tolerance, use <b>Limit trace area</b>, or use <b>Erase box</b> to remove the bad points. Then fix them by hand with <b>Add/remove points</b> (left-click adds, right-click removes).</div>
+  <div id="curves"></div>
+
+  <h2>4. Output table</h2>
+  <div class="row">SoC step (%) <input type="number" id="step" value="1" min="0.01" step="any" style="width:60px">
+    Order <select id="order"><option value="desc">100 → 0</option><option value="asc">0 → 100</option></select></div>
+  <div class="row">SoC as <select id="socUnit"><option value="pct">percent (0–100)</option><option value="frac">fraction (0–1)</option></select>
+    Decimals (V) <input type="number" id="dec" value="3" min="0" max="6" style="width:50px"></div>
+  <div class="row">Outside traced range <select id="oor"><option value="clamp">hold end voltage</option><option value="blank">leave blank</option></select>
+    <label><input type="checkbox" id="hdr" checked> Header row</label></div>
+  <div class="row"><button id="copyTsv">Copy for Excel</button><button id="dlCsv">Download CSV</button><span id="copyMsg" class="ok"></span></div>
+  <div id="outMsg" class="help"></div>
+  <div id="tablewrap"><table id="tbl"></table></div>
+
+  <h2>5. Continuous lookup in Excel</h2>
+  <div class="help">This builds a formula that looks up the voltage for any SoC you type into a cell. It blends between the two nearest table rows, so 37.4% works even if the table only has 37 and 38. SoC values past the ends of the table return the end voltage instead of an error. It works in any version of Excel and in Google Sheets.</div>
+  <div class="row"><b>Table starts at</b> <input type="text" id="anchor" value="A1" style="width:50px"></div>
+  <div class="help" style="margin-top:0">The cell where you pasted the table, meaning its top-left corner (the "SoC" header). If you pasted at C5, type C5.</div>
+  <div class="row"><b>SoC input cell</b> <input type="text" id="lookup" value="H2" style="width:50px"></div>
+  <div class="help" style="margin-top:0">The cell where you will type the SoC you want to look up. It can be any empty cell, or a cell that already holds an SoC value from your calculations. Put the formula in a different cell and it will show the voltage.</div>
+  <div class="row">Curve <select id="fCurve"></select></div>
+  <textarea id="formula" readonly></textarea>
+  <div class="row"><button id="copyF">Copy formula</button></div>
+</aside>
+
+<div id="main">
+  <div id="toolbar">
+    Zoom <select id="zoom">
+      <option value="fit">Fit</option><option>0.5</option><option>0.75</option><option>1</option>
+      <option>1.5</option><option>2</option><option>3</option><option>4</option>
+    </select>
+    <span id="readout"></span>
+  </div>
+  <div id="hint">Load a chart image to begin.</div>
+  <div id="wrap">
+    <canvas id="cv" width="10" height="10"></canvas>
+    <div id="empty">Drop a discharge-curve image here<br>or paste a screenshot with Ctrl+V</div>
+  </div>
+</div>
+</div>
+<canvas id="loupe" width="176" height="176" class="hidden"></canvas>
+
+<!-- Core algorithms: no DOM access, so they can be unit tested in Node. -->
+<script id="core">
+(function (g) {
+  'use strict';
+  function dist2(d, i, c) {
+    const r = d[i] - c[0], gg = d[i + 1] - c[1], b = d[i + 2] - c[2];
+    return r * r + gg * gg + b * b;
+  }
+
+  // Runs of pixels in column x whose color is within tol of color. Single-pixel holes are merged.
+  function findClusters(img, x, y0, y1, color, tol) {
+    const d = img.data, W = img.width, tol2 = tol * tol, out = [];
+    let cur = null, miss = 0;
+    const fin = c => ({ top: c.top, bot: c.bot, cy: c.swy / c.sw });
+    for (let y = y0; y <= y1; y++) {
+      const q = dist2(d, (y * W + x) * 4, color);
+      if (q <= tol2) {
+        const w = 1 - Math.sqrt(q) / (tol + 1);
+        if (!cur) cur = { top: y, bot: y, sw: 0, swy: 0 };
+        cur.bot = y; cur.sw += w; cur.swy += w * y; miss = 0;
+      } else if (cur && ++miss > 1) { out.push(fin(cur)); cur = null; miss = 0; }
+    }
+    if (cur) out.push(fin(cur));
+    return out;
+  }
+
+  function clampBounds(b, W, H) {
+    if (!b) return { x0: 0, x1: W - 1, y0: 0, y1: H - 1 };
+    return {
+      x0: Math.max(0, Math.floor(Math.min(b.x0, b.x1))), x1: Math.min(W - 1, Math.ceil(Math.max(b.x0, b.x1))),
+      y0: Math.max(0, Math.floor(Math.min(b.y0, b.y1))), y1: Math.min(H - 1, Math.ceil(Math.max(b.y0, b.y1)))
+    };
+  }
+
+  // Follow a colored curve column by column from a seed point, keeping continuity with the previous column.
+  function traceCurve(img, o) {
+    const b = clampBounds(o.bounds, img.width, img.height);
+    const maxGap = o.maxGap != null ? o.maxGap : 25, maxJump = o.maxJump != null ? o.maxJump : 4;
+    const sx = Math.min(b.x1, Math.max(b.x0, Math.floor(o.seedX))), sy = o.seedY;
+    let start = null;
+    for (let k = 0; k <= 6 && !start; k++) {
+      for (const dx of (k ? [k, -k] : [0])) {
+        const x = sx + dx;
+        if (x < b.x0 || x > b.x1) continue;
+        let best = null, bd = Infinity;
+        for (const c of findClusters(img, x, b.y0, b.y1, o.color, o.tol)) {
+          const dd = Math.max(0, c.top - sy, sy - c.bot);
+          if (dd < bd) { bd = dd; best = c; }
+        }
+        if (best && bd <= 10) { start = Object.assign({ x }, best); break; }
+      }
+    }
+    if (!start) return [];
+    const march = dir => {
+      const res = [];
+      let prev = start, gap = 0;
+      for (let x = start.x + dir; x >= b.x0 && x <= b.x1; x += dir) {
+        let best = null, bd = Infinity, bc = Infinity;
+        for (const c of findClusters(img, x, b.y0, b.y1, o.color, o.tol)) {
+          const dd = Math.max(0, c.top - prev.bot, prev.top - c.bot), dc = Math.abs(c.cy - prev.cy);
+          if (dd < bd || (dd === bd && dc < bc)) { bd = dd; bc = dc; best = c; }
+        }
+        if (best && bd <= maxJump + gap * 2) { prev = Object.assign({ x }, best); res.push(prev); gap = 0; }
+        else if (++gap > maxGap) break;
+      }
+      return res;
+    };
+    return march(-1).reverse().concat([start], march(1));
+  }
+
+  // Column clusters -> centerline points (pixel-center coordinates). Tall clusters are near-vertical segments.
+  function columnsToPath(cols) {
+    if (!cols.length) return [];
+    const spans = cols.map(c => c.bot - c.top + 1).sort((a, b) => a - b);
+    const T = spans[Math.floor(spans.length / 2)];
+    const thick = Math.max(3, Math.ceil(T * 1.8));
+    const pts = [];
+    let prevY = cols[0].cy + 0.5;
+    for (const c of cols) {
+      const x = c.x + 0.5;
+      if (c.bot - c.top + 1 <= thick) pts.push({ x, y: c.cy + 0.5 });
+      else {
+        const a = c.top + T / 2, z = c.bot + 1 - T / 2;
+        if (Math.abs(prevY - a) <= Math.abs(prevY - z)) pts.push({ x, y: a }, { x, y: z });
+        else pts.push({ x, y: z }, { x, y: a });
+      }
+      prevY = pts[pts.length - 1].y;
+    }
+    return pts;
+  }
+
+  // Pick the most "ink-like" color near a click: the pixel farthest from the local background.
+  function pickColor(img, x, y) {
+    const W = img.width, H = img.height, d = img.data, hist = new Map();
+    let bgK = 0, bgN = 0;
+    for (let yy = Math.max(0, y - 15); yy <= Math.min(H - 1, y + 15); yy++)
+      for (let xx = Math.max(0, x - 15); xx <= Math.min(W - 1, x + 15); xx++) {
+        const i = (yy * W + xx) * 4, k = ((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4);
+        const n = (hist.get(k) || 0) + 1; hist.set(k, n);
+        if (n > bgN) { bgN = n; bgK = k; }
+      }
+    const bg = [((bgK >> 8) & 15) * 16 + 8, ((bgK >> 4) & 15) * 16 + 8, (bgK & 15) * 16 + 8];
+    let best = null;
+    // Widen the search until real ink is found (handles clicks that land in a gap of a dashed/dotted line).
+    for (const r of [2, 4, 7, 10]) {
+      let bd = -Infinity, raw = 0;
+      for (let yy = Math.max(0, y - r); yy <= Math.min(H - 1, y + r); yy++)
+        for (let xx = Math.max(0, x - r); xx <= Math.min(W - 1, x + r); xx++) {
+          const i = (yy * W + xx) * 4, q0 = dist2(d, i, bg);
+          const q = q0 - ((xx - x) ** 2 + (yy - y) ** 2) * 2000;
+          if (q > bd) { bd = q; raw = q0; best = { x: xx, y: yy, color: [d[i], d[i + 1], d[i + 2]] }; }
+        }
+      if (raw > 80 * 80) break;
+    }
+    return best;
+  }
+
+  // Linear pixel <-> value mapping from two X and two Y reference points ({px, py, val}).
+  function makeTransform(cal) {
+    const { x1, x2, y1, y2 } = cal;
+    if (![x1, x2, y1, y2].every(p => p && isFinite(p.val) && isFinite(p.px))) return null;
+    if (Math.abs(x2.px - x1.px) < 1 || Math.abs(y2.py - y1.py) < 1 || x1.val === x2.val || y1.val === y2.val) return null;
+    const ax = (x2.val - x1.val) / (x2.px - x1.px), ay = (y2.val - y1.val) / (y2.py - y1.py);
+    return {
+      xv: px => x1.val + (px - x1.px) * ax, yv: py => y1.val + (py - y1.py) * ay,
+      xp: v => x1.px + (v - x1.val) / ax, yp: v => y1.py + (v - y1.val) / ay,
+      dxPerPx: Math.abs(ax), dyPerPx: Math.abs(ay)
+    };
+  }
+
+  function toSoc(xv, mode, Q) { return mode === 'dod' ? 100 - xv : mode === 'ah' ? 100 * (1 - xv / Q) : xv; }
+  function fromSoc(s, mode, Q) { return mode === 'dod' ? 100 - s : mode === 'ah' ? Q * (1 - s / 100) : s; }
+
+  // Image-pixel points -> [{soc, v}] plus the capacity Q used for Ah conversion.
+  function curveToSoc(pts, tf, mode, qref, autoQ) {
+    let Q = qref;
+    if (mode === 'ah' && autoQ) Q = pts.reduce((m, p) => Math.max(m, tf.xv(p.x)), -Infinity);
+    if (mode === 'ah' && !(Q > 0)) return { points: [], Q };
+    return { points: pts.map(p => ({ soc: toSoc(tf.xv(p.x), mode, Q), v: tf.yv(p.y) })), Q };
+  }
+
+  function buildGrid(step, order) {
+    const n = Math.floor(100 / step + 1e-9), g = [];
+    for (let i = 0; i <= n; i++) g.push(+(i * step).toFixed(6));
+    if (g[g.length - 1] < 100) g.push(100);
+    return order === 'desc' ? g.reverse() : g;
+  }
+
+  // Linear interpolation of V at each grid SoC. slack: SoC distance from the traced range still counted as "in range".
+  function resample(points, grid, outMode, slack) {
+    slack = slack || 0;
+    const p = points.filter(q => isFinite(q.soc) && isFinite(q.v)).sort((a, b) => a.soc - b.soc);
+    const xs = [], ys = [], ns = [];
+    for (const q of p) {
+      const n = xs.length;
+      if (n && Math.abs(q.soc - xs[n - 1]) < 1e-9) { ys[n - 1] += q.v; ns[n - 1]++; }
+      else { xs.push(q.soc); ys.push(q.v); ns.push(1); }
+    }
+    for (let i = 0; i < ys.length; i++) ys[i] /= ns[i];
+    const last = xs.length - 1;
+    return grid.map(s => {
+      if (!xs.length) return { v: null, clamped: true };
+      if (s <= xs[0] || s >= xs[last]) {
+        const v = s <= xs[0] ? ys[0] : ys[last];
+        const out = s < xs[0] - slack || s > xs[last] + slack;
+        return { v: out && outMode === 'blank' ? null : v, clamped: out };
+      }
+      let lo = 0, hi = last;
+      while (hi - lo > 1) { const m = (lo + hi) >> 1; if (xs[m] <= s) lo = m; else hi = m; }
+      return { v: ys[lo] + (s - xs[lo]) / (xs[hi] - xs[lo]) * (ys[hi] - ys[lo]), clamped: false };
+    });
+  }
+
+  function colToNum(s) { let n = 0; for (const ch of s.toUpperCase()) n = n * 26 + ch.charCodeAt(0) - 64; return n; }
+  function numToCol(n) { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
+
+  // Interpolating lookup formula (no LET/LAMBDA, so it works in any Excel version and in Google Sheets).
+  function excelFormula(o) {
+    const m = /^\s*\$?([A-Za-z]{1,3})\$?(\d+)\s*$/.exec(o.anchor || '');
+    if (!m || !o.lookup || !o.lookup.trim()) return null;
+    const c0 = colToNum(m[1]), r0 = +m[2] + (o.header ? 1 : 0), r1 = r0 + o.nRows - 1;
+    const xc = numToCol(c0), yc = numToCol(c0 + 1 + o.curveIdx), L = o.lookup.trim();
+    const xs = `$${xc}$${r0}:$${xc}$${r1}`;
+    const xcl = `MIN(MAX(${L},MIN(${xs})),MAX(${xs}))`;
+    const i = `MIN(MATCH(${xcl},${xs},${o.desc ? -1 : 1}),ROWS(${xs})-1)`;
+    return `=FORECAST(${xcl},OFFSET($${yc}$${r0},${i}-1,0,2),OFFSET($${xc}$${r0},${i}-1,0,2))`;
+  }
+
+  g.Core = { findClusters, traceCurve, columnsToPath, pickColor, makeTransform, toSoc, fromSoc,
+    curveToSoc, buildGrid, resample, excelFormula, colToNum, numToCol };
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+
+<script id="ui">
+(function () {
+'use strict';
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d'), loupe = $('loupe'), lctx = loupe.getContext('2d');
+const S = { img: null, imgData: null, W: 0, H: 0, zoom: 1, cal: { x1: null, x2: null, y1: null, y2: null },
+  mode: null, curves: [], sel: -1, bounds: null, drag: null, mask: null, out: null, imgURL: null, hover: null };
+const CAL_ORDER = ['x1', 'x2', 'y1', 'y2'];
+const hex = c => '#' + c.map(v => v.toString(16).padStart(2, '0')).join('');
+const unhex = h => [1, 3, 5].map(i => parseInt(h.substr(i, 2), 16));
+
+// ---------- image loading ----------
+function loadImageURL(url, after) {
+  const im = new Image();
+  im.onload = () => {
+    const c = document.createElement('canvas');
+    c.width = im.naturalWidth; c.height = im.naturalHeight;
+    const cx = c.getContext('2d');
+    cx.fillStyle = '#fff'; cx.fillRect(0, 0, c.width, c.height); cx.drawImage(im, 0, 0);
+    Object.assign(S, { img: c, imgData: cx.getImageData(0, 0, c.width, c.height), W: c.width, H: c.height,
+      imgURL: c.toDataURL('image/png'), mask: null });
+    if (after) after();
+    else { S.cal = { x1: null, x2: null, y1: null, y2: null }; S.curves = []; S.sel = -1; S.bounds = null; S.mode = null; setMode('x1'); }
+    $('empty').classList.add('hidden'); loupe.classList.remove('hidden');
+    applyZoom(); renderCurveList(); updateAll();
+  };
+  im.onerror = () => alert('Could not read that image.');
+  im.src = url;
+}
+function loadFile(f) {
+  if (!f) return;
+  const r = new FileReader();
+  if (/\.json$/i.test(f.name) || f.type === 'application/json') { r.onload = () => loadProject(r.result); r.readAsText(f); }
+  else { r.onload = () => loadImageURL(r.result); r.readAsDataURL(f); }
+}
+$('file').onchange = e => { loadFile(e.target.files[0]); e.target.value = ''; };
+document.addEventListener('paste', e => {
+  const it = [...(e.clipboardData || {}).items || []].find(i => i.type.startsWith('image/'));
+  if (it) { e.preventDefault(); loadFile(it.getAsFile()); }
+});
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => { e.preventDefault(); loadFile(e.dataTransfer.files[0]); });
+
+// ---------- zoom & coordinates ----------
+function applyZoom() {
+  if (!S.img) return;
+  const z = $('zoom').value;
+  S.zoom = z === 'fit' ? Math.min(3, Math.max(0.1, ($('wrap').clientWidth - 24) / S.W)) : +z;
+  render();
+}
+$('zoom').onchange = applyZoom;
+window.addEventListener('resize', () => { if ($('zoom').value === 'fit') applyZoom(); });
+function imgPt(e) {
+  const r = cv.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * S.W / r.width, y: (e.clientY - r.top) * S.H / r.height };
+}
+
+// ---------- drawing ----------
+function drawScene(c, k) { // k = screen pixels per image pixel (transform already set)
+  const lw = w => w / k;
+  c.imageSmoothingEnabled = k < 1;
+  c.drawImage(S.img, 0, 0);
+  if (S.mask && $('showMask').checked) c.drawImage(S.mask, 0, 0);
+  if (S.bounds) {
+    const b = S.bounds; c.save(); c.setLineDash([lw(6), lw(4)]); c.strokeStyle = '#555'; c.lineWidth = lw(1.5);
+    c.strokeRect(Math.min(b.x0, b.x1), Math.min(b.y0, b.y1), Math.abs(b.x1 - b.x0), Math.abs(b.y1 - b.y0)); c.restore();
+  }
+  for (const key of CAL_ORDER) {
+    const p = S.cal[key]; if (!p) continue;
+    const isX = key[0] === 'x';
+    c.strokeStyle = isX ? 'rgba(0,100,255,.8)' : 'rgba(0,150,70,.8)'; c.lineWidth = lw(1);
+    c.beginPath();
+    if (isX) { c.moveTo(p.px, 0); c.lineTo(p.px, S.H); } else { c.moveTo(0, p.py); c.lineTo(S.W, p.py); }
+    c.stroke();
+    c.fillStyle = c.strokeStyle; c.font = `bold ${lw(12)}px Segoe UI`;
+    const v = $('v_' + key).value;
+    c.fillText(`${key.toUpperCase()}=${v}`, (isX ? p.px : 4 / k) + lw(3), (isX ? lw(14) : p.py - lw(3)));
+  }
+  S.curves.forEach((cu, idx) => {
+    const sel = idx === S.sel, pts = cu.pts.slice().sort((a, b) => a.x - b.x);
+    c.lineWidth = lw(sel ? 2 : 1.2); c.strokeStyle = sel ? '#ff00ff' : 'rgba(0,0,0,.75)';
+    c.beginPath(); pts.forEach((p, i) => i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y)); c.stroke();
+    if (sel && $('mAdd').classList.contains('on')) {
+      c.fillStyle = '#ff00ff';
+      for (const p of pts) c.fillRect(p.x - lw(1.5), p.y - lw(1.5), lw(3), lw(3));
+    }
+  });
+  if (S.out && S.out.tf) {
+    const tf = S.out.tf;
+    S.out.cols.forEach((col, idx) => {
+      col.vals.forEach((r, i) => {
+        if (r.v == null) return;
+        const x = tf.xp(Core.fromSoc(S.out.grid[i], S.out.mode, col.Q)), y = tf.yp(r.v);
+        c.beginPath(); c.arc(x, y, lw(idx === S.sel ? 3.2 : 2.4), 0, 7);
+        c.fillStyle = r.clamped ? '#bbb' : '#fff'; c.fill(); c.lineWidth = lw(1); c.strokeStyle = '#000'; c.stroke();
+      });
+    });
+  }
+  if (S.drag) {
+    const d = S.drag; c.strokeStyle = S.mode === 'erase' ? '#d00' : '#06c'; c.lineWidth = lw(1.5);
+    c.strokeRect(Math.min(d.x0, d.x1), Math.min(d.y0, d.y1), Math.abs(d.x1 - d.x0), Math.abs(d.y1 - d.y0));
+  }
+}
+function render() {
+  if (!S.img) return;
+  const z = S.zoom, w = Math.round(S.W * z), h = Math.round(S.H * z);
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  ctx.setTransform(z, 0, 0, z, 0, 0);
+  drawScene(ctx, z);
+  drawLoupe();
+}
+function drawLoupe() {
+  if (!S.img || !S.hover) return;
+  const L = 8, half = loupe.width / L / 2, { x, y } = S.hover;
+  lctx.setTransform(1, 0, 0, 1, 0, 0); lctx.fillStyle = '#fff'; lctx.fillRect(0, 0, loupe.width, loupe.height);
+  lctx.setTransform(L, 0, 0, L, -(x - half) * L, -(y - half) * L);
+  drawScene(lctx, L);
+  lctx.setTransform(1, 0, 0, 1, 0, 0);
+  lctx.strokeStyle = 'rgba(255,0,0,.8)'; lctx.lineWidth = 1;
+  const m = loupe.width / 2;
+  lctx.beginPath(); lctx.moveTo(m, 0); lctx.lineTo(m, m - 6); lctx.moveTo(m, m + 6); lctx.lineTo(m, loupe.height);
+  lctx.moveTo(0, m); lctx.lineTo(m - 6, m); lctx.moveTo(m + 6, m); lctx.lineTo(loupe.width, m); lctx.stroke();
+}
+function buildMask() {
+  S.mask = null;
+  const cu = S.curves[S.sel];
+  if (!S.img || !cu || !$('showMask').checked) return;
+  const m = document.createElement('canvas'); m.width = S.W; m.height = S.H;
+  const mc = m.getContext('2d'), out = mc.createImageData(S.W, S.H), d = S.imgData.data, t2 = cu.tol * cu.tol;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i] - cu.color[0], g = d[i + 1] - cu.color[1], b = d[i + 2] - cu.color[2];
+    if (r * r + g * g + b * b <= t2) { out.data[i] = 0; out.data[i + 1] = 230; out.data[i + 2] = 0; out.data[i + 3] = 255; }
+  }
+  mc.putImageData(out, 0, 0); S.mask = m;
+}
+// ---------- modes ----------
+const HINTS = {
+  x1: 'Click a known X tick/gridline (X1). Then type its value in the sidebar.',
+  x2: 'Click a second X tick/gridline far from X1 (X2).',
+  y1: 'Click a known voltage tick/gridline (Y1).',
+  y2: 'Click a second voltage tick/gridline far from Y1 (Y2).',
+  trace: 'Click directly on a curve to auto-trace it. Click more curves to add them. Press Esc when done.',
+  add: 'Left-click adds a point to the selected curve. Right-click removes the nearest point. Press Esc when done.',
+  erase: 'Drag a box to remove the selected curve\'s points inside it. Press Esc when done.',
+  area: 'Drag a box around the plot area. Auto-trace stays inside it (keeps out the legend and title).'
+};
+function setMode(m) {
+  S.mode = S.mode === m ? null : m;
+  document.querySelectorAll('[data-mode],[data-cal]').forEach(b =>
+    b.classList.toggle('on', (b.dataset.mode || b.dataset.cal) === S.mode));
+  cv.classList.toggle('cross', !!S.mode);
+  $('hint').textContent = S.mode ? HINTS[S.mode] : (S.img ? 'Choose an action in the sidebar. The white dots are the exact table values, so check that they sit on the curves.' : 'Load a chart image to begin.');
+  render();
+}
+document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => setMode(b.dataset.mode));
+document.querySelectorAll('[data-cal]').forEach(b => b.onclick = () => setMode(b.dataset.cal));
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && S.mode) setMode(S.mode); });
+$('clearArea').onclick = () => { S.bounds = null; render(); };
+
+// ---------- mouse ----------
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('mousedown', e => {
+  if (!S.img || !S.mode) return;
+  const p = imgPt(e);
+  if (CAL_ORDER.includes(S.mode)) {
+    S.cal[S.mode] = { px: p.x, py: p.y };
+    const nx = CAL_ORDER.find(k => !S.cal[k]);
+    S.mode = null; setMode(nx || null); updateAll();
+  } else if (S.mode === 'trace' && e.button === 0) traceAt(p);
+  else if (S.mode === 'add') editPoint(p, e.button === 2);
+  else if (S.mode === 'erase' || S.mode === 'area') S.drag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+});
+cv.addEventListener('mousemove', e => {
+  if (!S.img) return;
+  const p = imgPt(e); S.hover = p;
+  const nearLoupe = e.clientX > innerWidth - 230 && e.clientY > innerHeight - 230;
+  if (nearLoupe !== loupe.classList.contains('top')) loupe.classList.toggle('top', nearLoupe);
+  if (S.drag) { S.drag.x1 = p.x; S.drag.y1 = p.y; render(); } else drawLoupe();
+  let s = `px ${p.x.toFixed(1)}, ${p.y.toFixed(1)}`;
+  const tf = currentTransform();
+  if (tf) {
+    const xv = tf.xv(p.x), mode = $('xMode').value;
+    s += `  |  X = ${xv.toFixed(mode === 'ah' ? 3 : 2)}   V = ${tf.yv(p.y).toFixed(3)}`;
+    const Q = +$('qref').value;
+    if (mode !== 'soc' && (mode === 'dod' || Q > 0)) s += `   SoC ≈ ${Core.toSoc(xv, mode, Q).toFixed(2)}%`;
+  }
+  $('readout').textContent = s;
+});
+window.addEventListener('mouseup', () => {
+  const d = S.drag; if (!d) return;
+  S.drag = null;
+  const b = { x0: Math.min(d.x0, d.x1), x1: Math.max(d.x0, d.x1), y0: Math.min(d.y0, d.y1), y1: Math.max(d.y0, d.y1) };
+  if (S.mode === 'area' && b.x1 - b.x0 > 4 && b.y1 - b.y0 > 4) { S.bounds = b; setMode(null); }
+  else if (S.mode === 'erase' && S.curves[S.sel]) {
+    const cu = S.curves[S.sel];
+    cu.pts = cu.pts.filter(p => p.x < b.x0 || p.x > b.x1 || p.y < b.y0 || p.y > b.y1);
+    renderCurveList(); updateAll();
+  } else render();
+});
+
+// ---------- tracing & editing ----------
+function retrace(cu) {
+  const cols = Core.traceCurve(S.imgData, { color: cu.color, tol: cu.tol, seedX: cu.seed.x, seedY: cu.seed.y,
+    bounds: S.bounds, maxGap: +$('maxGap').value || 0 });
+  cu.pts = Core.columnsToPath(cols);
+}
+function traceAt(p) {
+  const pk = Core.pickColor(S.imgData, Math.floor(p.x), Math.floor(p.y));
+  const cu = { name: `Curve ${S.curves.length + 1}`, color: pk.color, tol: +$('tol').value, seed: { x: pk.x + 0.5, y: pk.y + 0.5 }, pts: [] };
+  retrace(cu);
+  if (cu.pts.length < 2) { $('hint').textContent = 'Nothing traceable there. Click right on the curve line, or raise the tolerance.'; return; }
+  S.curves.push(cu); S.sel = S.curves.length - 1;
+  buildMask(); renderCurveList(); updateAll();
+}
+function editPoint(p, remove) {
+  let cu = S.curves[S.sel];
+  if (remove) {
+    if (!cu || !cu.pts.length) return;
+    let bi = -1, bd = Infinity;
+    cu.pts.forEach((q, i) => { const d = (q.x - p.x) ** 2 + (q.y - p.y) ** 2; if (d < bd) { bd = d; bi = i; } });
+    if (Math.sqrt(bd) * S.zoom <= 12) cu.pts.splice(bi, 1);
+  } else {
+    if (!cu) {
+      const i = (Math.floor(p.y) * S.W + Math.floor(p.x)) * 4, d = S.imgData.data;
+      cu = { name: `Curve ${S.curves.length + 1}`, color: [d[i], d[i + 1], d[i + 2]], tol: +$('tol').value, seed: null, pts: [] };
+      S.curves.push(cu); S.sel = S.curves.length - 1;
+    }
+    cu.pts.push({ x: p.x, y: p.y });
+  }
+  renderCurveList(); updateAll();
+}
+
+// ---------- curve list ----------
+function renderCurveList() {
+  const box = $('curves'); box.innerHTML = '';
+  if (!S.curves.length) { box.innerHTML = '<div class="help">No curves yet.</div>'; }
+  S.curves.forEach((cu, i) => {
+    const row = document.createElement('div');
+    row.className = 'crow' + (i === S.sel ? ' sel' : '');
+    row.innerHTML = `<input type="radio" name="csel" ${i === S.sel ? 'checked' : ''} title="Select">
+      <input type="color" value="${hex(cu.color)}" title="Trace color (changing it re-traces)">
+      <input type="text" class="name" title="Name (used as the column header)">
+      <span class="cnt">${cu.pts.length} pts</span>
+      <button class="sm" title="Re-trace with current tolerance/area/gap" ${cu.seed ? '' : 'disabled'}>↻</button>
+      <button class="sm" title="Delete curve">✕</button>`;
+    const [radio, color, name, , rt, del] = row.children;
+    name.value = cu.name;
+    const select = () => {
+      if (S.sel === i) return;
+      S.sel = i; $('tol').value = cu.tol; $('tolv').textContent = cu.tol;
+      [...box.children].forEach((r, j) => { r.classList.toggle('sel', j === i); r.firstElementChild.checked = j === i; });
+      buildMask(); render();
+    };
+    radio.onchange = select; name.onfocus = select;
+    name.oninput = () => { cu.name = name.value; $('fCurve').options[i].textContent = cu.name; updateOutput(); updateFormula(); };
+    color.onchange = () => { cu.color = unhex(color.value); if (cu.seed) retrace(cu); select(); buildMask(); renderCurveList(); updateAll(); };
+    rt.onclick = () => { cu.tol = +$('tol').value; retrace(cu); renderCurveList(); updateAll(); };
+    del.onclick = () => { S.curves.splice(i, 1); S.sel = Math.min(S.sel, S.curves.length - 1); buildMask(); renderCurveList(); updateAll(); };
+    box.appendChild(row);
+  });
+  const fc = $('fCurve'), prev = fc.value;
+  fc.innerHTML = S.curves.map((c, i) => `<option value="${i}">${c.name.replace(/</g, '&lt;')}</option>`).join('');
+  if (prev && +prev < S.curves.length) fc.value = prev;
+}
+$('tol').oninput = () => {
+  $('tolv').textContent = $('tol').value;
+  const cu = S.curves[S.sel];
+  if (cu) { cu.tol = +$('tol').value; if (cu.seed) retrace(cu); buildMask(); renderCurveList(); updateAll(); }
+};
+$('showMask').onchange = () => { buildMask(); render(); };
+$('maxGap').onchange = () => { const cu = S.curves[S.sel]; if (cu && cu.seed) { retrace(cu); renderCurveList(); updateAll(); } };
+
+// ---------- calibration ----------
+function currentTransform() {
+  const c = {};
+  for (const k of CAL_ORDER) c[k] = S.cal[k] && { px: S.cal[k].px, py: S.cal[k].py, val: parseFloat($('v_' + k).value) };
+  return Core.makeTransform(c);
+}
+function updateCalUI() {
+  for (const k of CAL_ORDER) { const p = S.cal[k]; $('px_' + k).textContent = p ? (k[0] === 'x' ? `x = ${p.px.toFixed(1)} px` : `y = ${p.py.toFixed(1)} px`) : 'not set'; }
+  const tf = currentTransform(), mode = $('xMode').value, st = $('calStatus');
+  $('ahOpts').classList.toggle('hidden', mode !== 'ah');
+  if (!tf) { st.innerHTML = '<span class="warn">Set all 4 points and their values.</span>'; return; }
+  const unit = mode === 'ah' ? '' : '%';
+  st.innerHTML = `<span class="ok">✓ Calibrated.</span>&nbsp;Resolution: 1 px = ${tf.dyPerPx.toPrecision(2)} V, ${tf.dxPerPx.toPrecision(2)}${unit} on X`;
+}
+CAL_ORDER.forEach(k => $('v_' + k).oninput = updateAll);
+$('xMode').onchange = () => {
+  const m = $('xMode').value;
+  if (m !== 'ah' && $('v_x1').value === '' && $('v_x2').value === '') { $('v_x1').value = 0; $('v_x2').value = 100; }
+  updateAll();
+};
+['qref', 'autoQ', 'step', 'order', 'socUnit', 'dec', 'oor', 'hdr'].forEach(id => $(id).addEventListener('input', updateAll));
+['anchor', 'lookup', 'fCurve'].forEach(id => $(id).addEventListener('input', updateFormula));
+
+// ---------- output ----------
+function updateOutput() {
+  const tf = currentTransform(), mode = $('xMode').value, msg = $('outMsg');
+  S.out = null; $('tbl').innerHTML = '';
+  if (!S.img) { msg.textContent = ''; return; }
+  if (!tf) { msg.textContent = 'Calibrate the axes (step 2) to see the table.'; return; }
+  if (!S.curves.length) { msg.textContent = 'Trace at least one curve (step 3).'; return; }
+  const qref = parseFloat($('qref').value), autoQ = $('autoQ').checked;
+  if (mode === 'ah' && !autoQ && !(qref > 0)) { msg.textContent = 'Enter the rated capacity, or tick "use each curve\'s own end point".'; return; }
+  const step = parseFloat($('step').value);
+  if (!(step > 0) || 100 / step > 20000) { msg.textContent = 'SoC step must be between 0.005 and 100.'; return; }
+  const grid = Core.buildGrid(step, $('order').value), oor = $('oor').value;
+  const cols = S.curves.map(cu => {
+    const { points, Q } = Core.curveToSoc(cu.pts, tf, mode, qref, autoQ);
+    const slack = 2 * (mode === 'ah' ? tf.dxPerPx / Q * 100 : tf.dxPerPx); // 2 px of tolerance at the ends
+    return { name: cu.name, Q, vals: Core.resample(points, grid, oor, slack) };
+  });
+  S.out = { tf, mode, grid, cols };
+  const frac = $('socUnit').value === 'frac', dec = Math.min(6, Math.max(0, +$('dec').value || 0));
+  const sd = Math.max(0, (String(step).split('.')[1] || '').length) + (frac ? 2 : 0);
+  S.out.rows = grid.map((s, i) => [(frac ? s / 100 : s).toFixed(sd), ...cols.map(c => c.vals[i].v == null ? '' : c.vals[i].v.toFixed(dec))]);
+  S.out.header = [frac ? 'SoC' : 'SoC (%)', ...cols.map(c => c.name)];
+  const clampedAny = cols.some(c => c.vals.some(v => v.clamped));
+  msg.innerHTML = `${grid.length} rows × ${cols.length} curve(s).` + (clampedAny ?
+    ` <span class="warn">Gray cells are outside the traced part of the curve (${oor === 'clamp' ? 'held at the end voltage' : 'left blank'}).</span>` : '') +
+    (mode === 'ah' ? ` Capacity used for 0% SoC: ${cols.map(c => `${c.name} ${(+c.Q).toFixed(3)}`).join(', ')}.` : '');
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  $('tbl').innerHTML = '<tr>' + S.out.header.map(h => `<th>${esc(h)}</th>`).join('') + '</tr>' +
+    S.out.rows.map((r, i) => '<tr>' + r.map((v, j) => `<td${j && cols[j - 1].vals[i].clamped ? ' class="clamp" title="Outside traced range"' : ''}>${v}</td>`).join('') + '</tr>').join('');
+}
+function updateFormula() {
+  const ta = $('formula');
+  if (!S.out || !S.out.rows) { ta.value = ''; return; }
+  const f = Core.excelFormula({ anchor: $('anchor').value, lookup: $('lookup').value, header: $('hdr').checked,
+    nRows: S.out.rows.length, curveIdx: +$('fCurve').value || 0, desc: $('order').value === 'desc' });
+  ta.value = f || 'Enter valid cell references (e.g. A1 and H2).';
+}
+function tableText(sep) {
+  const q = v => sep === ',' && /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+  const rows = ($('hdr').checked ? [S.out.header] : []).concat(S.out.rows);
+  return rows.map(r => r.map(q).join(sep)).join('\r\n') + '\r\n';
+}
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); }
+  catch { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+  $('copyMsg').textContent = 'Copied!'; setTimeout(() => $('copyMsg').textContent = '', 1500);
+}
+function download(name, text, type) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+$('copyTsv').onclick = () => S.out && S.out.rows && copyText(tableText('\t'));
+$('dlCsv').onclick = () => S.out && S.out.rows && download('discharge_curve_points.csv', tableText(','), 'text/csv');
+$('copyF').onclick = () => $('formula').value.startsWith('=') && copyText($('formula').value);
+
+function updateAll() { updateCalUI(); updateOutput(); updateFormula(); render(); }
+
+// ---------- project save/load ----------
+const SETTINGS = ['xMode', 'qref', 'autoQ', 'step', 'order', 'socUnit', 'dec', 'oor', 'hdr', 'maxGap', 'anchor', 'lookup', 'v_x1', 'v_x2', 'v_y1', 'v_y2'];
+$('saveProj').onclick = () => {
+  if (!S.img) return;
+  const settings = {};
+  SETTINGS.forEach(id => settings[id] = $(id).type === 'checkbox' ? $(id).checked : $(id).value);
+  download('discharge_digitizer_project.json', JSON.stringify({ version: 1, image: S.imgURL, cal: S.cal, bounds: S.bounds, curves: S.curves, settings }), 'application/json');
+};
+$('loadProj').onclick = () => $('projFile').click();
+$('projFile').onchange = e => { loadFile(e.target.files[0]); e.target.value = ''; };
+function loadProject(text) {
+  let p;
+  try { p = JSON.parse(text); } catch { alert('Not a valid project file.'); return; }
+  loadImageURL(p.image, () => {
+    S.cal = p.cal; S.bounds = p.bounds; S.curves = p.curves || []; S.sel = S.curves.length ? 0 : -1;
+    Object.entries(p.settings || {}).forEach(([id, v]) => { const el = $(id); if (el) { if (el.type === 'checkbox') el.checked = v; else el.value = v; } });
+    setMode(null);
+  });
+}
+
+renderCurveList(); updateAll(); setMode(null);
+})();
+</script>
+</body>
+</html>
